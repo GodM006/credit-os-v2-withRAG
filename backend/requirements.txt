@@ -1,0 +1,13 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.8
+pydantic-settings>=2.5
+langgraph>=0.2.45
+langchain-core>=0.3.15
+langchain-groq>=0.2.1
+python-dotenv>=1.0
+neo4j>=5.24
+scikit-learn>=1.5
+lightgbm>=4.5
+joblib>=1.4
+numpy>=1.26
