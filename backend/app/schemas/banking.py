@@ -1,30 +1,79 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+NULLISH = frozenset({"not provided", "n/a", "na", "none", "unknown", "null", ""})
+
+
+def parse_custom_date(v) -> date | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if s.lower() in NULLISH:
+        return None
+    # Support various input formats like YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, etc.
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 class BankAccountSummary(BaseModel):
-    bank_name: str
-    account_type: Literal["current", "savings", "cc_od"]
-    account_number_masked: str = Field(description="Last 4 digits only, e.g. XXXX1234")
+    bank_name: str = Field(default="")
+    account_type: Optional[Literal["current", "savings", "cc_od"]] = None
+    account_number_masked: str = Field(default="", description="Last 4 digits only, e.g. XXXX1234")
+
+    @field_validator("account_type", mode="before")
+    @classmethod
+    def coerce_account_type(cls, v):
+        if not v or str(v).strip().lower() in NULLISH:
+            return None
+        return v
 
 
 class BankingData(BaseModel):
     """Extracted from bank statements / Account Aggregator (AA) feed / Open Banking."""
 
-    entity_name: str
-    statement_period_start: date
-    statement_period_end: date
+    entity_name: str = Field(default="")
+    statement_period_start: Optional[date] = None
+    statement_period_end: Optional[date] = None
     accounts: List[BankAccountSummary] = Field(default_factory=list)
-    total_credits: float = Field(description="Sum of all credits over the statement period, in INR")
-    total_debits: float
-    avg_monthly_balance: float
-    min_balance: float
+    total_credits: float = Field(default=0.0, description="Sum of all credits over the statement period, in INR")
+    total_debits: float = Field(default=0.0)
+    avg_monthly_balance: float = Field(default=0.0)
+    min_balance: float = Field(default=0.0)
     bounce_count: int = Field(default=0, description="Count of bounced cheques / failed ECS/NACH in the period")
-    inferred_annual_turnover: float = Field(description="Annualised turnover inferred from bank credits")
+    inferred_annual_turnover: float = Field(default=0.0, description="Annualised turnover inferred from bank credits")
     cash_deposit_ratio: Optional[float] = Field(
         default=None, description="Cash deposits / total credits. High values are a fraud/risk signal."
     )
+
+    @field_validator("statement_period_start", "statement_period_end", mode="before")
+    @classmethod
+    def coerce_date_nullish(cls, v):
+        return parse_custom_date(v)
+
+    @field_validator(
+        "total_credits",
+        "total_debits",
+        "avg_monthly_balance",
+        "min_balance",
+        "inferred_annual_turnover",
+        mode="before"
+    )
+    @classmethod
+    def coerce_float_nullish(cls, v):
+        if v is None:
+            return 0.0
+        if str(v).strip().lower() in NULLISH:
+            return 0.0
+        try:
+            clean_val = str(v).replace(",", "").replace("₹", "").strip()
+            return abs(float(clean_val))
+        except (TypeError, ValueError):
+            return 0.0

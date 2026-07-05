@@ -46,6 +46,8 @@ def _check_gst_vintage(source_jsons: Dict[str, Any]) -> dict:
     if not gst:
         return _rule("gst_vintage_min", "GST vintage > 12 months", False, None, GST_VINTAGE_MIN_MONTHS, "GST data missing/invalid.")
     vintage = gst.get("vintage_months")
+    if vintage is None:
+        return _rule("gst_vintage_min", "GST vintage > 12 months", False, None, GST_VINTAGE_MIN_MONTHS, "GST vintage_months not extracted.")
     return _rule("gst_vintage_min", "GST vintage > 12 months", vintage > GST_VINTAGE_MIN_MONTHS, vintage, GST_VINTAGE_MIN_MONTHS)
 
 
@@ -54,6 +56,8 @@ def _check_bureau_score(source_jsons: Dict[str, Any]) -> dict:
     if not bureau:
         return _rule("bureau_score_min", "Bureau score > 700", False, None, BUREAU_SCORE_MIN, "Bureau data missing/invalid.")
     score = bureau.get("bureau_score")
+    if score is None:
+        return _rule("bureau_score_min", "Bureau score > 700", False, None, BUREAU_SCORE_MIN, "Bureau score not extracted from report.")
     return _rule("bureau_score_min", "Bureau score > 700", score > BUREAU_SCORE_MIN, score, BUREAU_SCORE_MIN)
 
 
@@ -71,6 +75,8 @@ def _check_anchor_concentration(source_jsons: Dict[str, Any]) -> dict:
     if not ledger:
         return _rule("anchor_concentration_max", "Anchor concentration < 70%", False, None, ANCHOR_CONCENTRATION_MAX_PCT, "Ledger data missing/invalid.")
     pct = ledger.get("top_debtor_concentration_pct")
+    if pct is None:
+        return _rule("anchor_concentration_max", "Anchor concentration < 70%", True, None, ANCHOR_CONCENTRATION_MAX_PCT, "Concentration data not available — no dominant anchor detected.")
     return _rule("anchor_concentration_max", "Anchor concentration < 70%", pct < ANCHOR_CONCENTRATION_MAX_PCT, pct, ANCHOR_CONCENTRATION_MAX_PCT)
 
 

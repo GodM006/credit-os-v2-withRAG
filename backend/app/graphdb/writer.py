@@ -33,7 +33,12 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
         summary["skipped"].append("kyc missing/invalid - cannot anchor a Company node without a CIN")
         return summary
 
-    cin = kyc["cin"]
+    cin = (kyc.get("cin") or "").strip()
+    if not cin:
+        # Fallback for proprietorships/partnerships which do not have a Corporate Identification Number (CIN)
+        fallback = (kyc.get("pan") or "").strip() or (kyc.get("legal_name") or "").strip() or f"CASE_{case_id}"
+        cin = fallback
+        summary["skipped"].append(f"kyc.cin is empty (non-corporate entity) - fell back to '{cin}' as anchor identifier")
     summary["company_cin"] = cin
 
     run_write(
@@ -49,12 +54,13 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
             c.ingested_at = $ingested_at
         """,
         cin=cin,
-        legal_name=kyc["legal_name"],
-        pan=kyc["pan"],
-        incorporation_date=kyc["incorporation_date"],
-        entity_type=kyc["entity_type"],
-        registered_address=kyc["registered_address"],
-        kyc_doc_status=kyc["kyc_doc_status"],
+        legal_name=kyc.get("legal_name", ""),
+        pan=kyc.get("pan", ""),
+        # Convert date → ISO string so Neo4j driver doesn't choke on Python date objects
+        incorporation_date=str(kyc.get("incorporation_date", "") or ""),
+        entity_type=kyc.get("entity_type", ""),
+        registered_address=kyc.get("registered_address", ""),
+        kyc_doc_status=kyc.get("kyc_doc_status", ""),
         case_id=case_id,
         ingested_at=ingested_at,
     )
@@ -77,7 +83,7 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
         summary["relationships_written"].append(f"HAS_DIRECTOR:{len(directors)}")
 
     gst = (source_jsons.get("gst") or {}).get("data")
-    if gst:
+    if gst and gst.get("gstin"):
         run_write(
             """
             MERGE (g:GSTEntity {gstin: $gstin})
@@ -96,12 +102,25 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
             MATCH (c:Company {cin: $cin})
             MERGE (c)-[:FILED_GST]->(g)
             """,
-            cin=cin, case_id=case_id, ingested_at=ingested_at, **gst,
+            cin=cin,
+            case_id=case_id,
+            ingested_at=ingested_at,
+            gstin=gst.get("gstin"),
+            legal_name=gst.get("legal_name"),
+            # Convert date → ISO string
+            registration_date=str(gst.get("registration_date") or "") if gst.get("registration_date") else None,
+            filing_frequency=gst.get("filing_frequency"),
+            filing_status=gst.get("filing_status"),
+            last_filed_period=gst.get("last_filed_period"),
+            gstr3b_annual_turnover=float(gst.get("gstr3b_annual_turnover") or 0) if gst.get("gstr3b_annual_turnover") is not None else None,
+            gstr1_annual_turnover=float(gst.get("gstr1_annual_turnover") or 0) if gst.get("gstr1_annual_turnover") is not None else None,
+            vintage_months=int(gst.get("vintage_months") or 0) if gst.get("vintage_months") is not None else None,
+            late_filings_last_12m=int(gst.get("late_filings_last_12m") or 0) if gst.get("late_filings_last_12m") is not None else None,
         )
         summary["nodes_written"].append("GSTEntity:1")
         summary["relationships_written"].append("FILED_GST:1")
     else:
-        summary["skipped"].append("gst missing/invalid")
+        summary["skipped"].append("gst missing/invalid or gstin is null")
 
     banking = (source_jsons.get("banking") or {}).get("data")
     if banking:
@@ -131,14 +150,14 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
                 account_key=account_key,
                 bank_name=acc["bank_name"],
                 account_type=acc["account_type"],
-                statement_period_start=banking["statement_period_start"],
-                statement_period_end=banking["statement_period_end"],
-                total_credits=banking["total_credits"],
-                total_debits=banking["total_debits"],
-                avg_monthly_balance=banking["avg_monthly_balance"],
-                min_balance=banking["min_balance"],
-                bounce_count=banking["bounce_count"],
-                inferred_annual_turnover=banking["inferred_annual_turnover"],
+                statement_period_start=str(banking.get("statement_period_start", "") or ""),
+                statement_period_end=str(banking.get("statement_period_end", "") or ""),
+                total_credits=float(banking.get("total_credits") or 0),
+                total_debits=float(banking.get("total_debits") or 0),
+                avg_monthly_balance=float(banking.get("avg_monthly_balance") or 0),
+                min_balance=float(banking.get("min_balance") or 0),
+                bounce_count=int(banking.get("bounce_count") or 0),
+                inferred_annual_turnover=float(banking.get("inferred_annual_turnover") or 0),
                 cash_deposit_ratio=banking.get("cash_deposit_ratio"),
                 case_id=case_id,
                 ingested_at=ingested_at,
@@ -171,7 +190,20 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
             MATCH (c:Company {cin: $cin})
             MERGE (c)-[:HAS_BUREAU_PROFILE]->(p)
             """,
-            profile_id=profile_id, cin=cin, case_id=case_id, ingested_at=ingested_at, **bureau,
+            profile_id=profile_id,
+            cin=cin,
+            case_id=case_id,
+            ingested_at=ingested_at,
+            entity_type=bureau.get("entity_type") or "",
+            bureau_score=bureau.get("bureau_score"),
+            total_exposure=float(bureau.get("total_exposure") or 0),
+            overdue_amount=float(bureau.get("overdue_amount") or 0),
+            dpd_30=int(bureau.get("dpd_30") or 0),
+            dpd_60=int(bureau.get("dpd_60") or 0),
+            dpd_90_plus=int(bureau.get("dpd_90_plus") or 0),
+            enquiries_last_6m=int(bureau.get("enquiries_last_6m") or 0),
+            written_off_accounts=int(bureau.get("written_off_accounts") or 0),
+            active_accounts=int(bureau.get("active_accounts") or 0),
         )
         summary["nodes_written"].append("BureauProfile:1")
         summary["relationships_written"].append("HAS_BUREAU_PROFILE:1")
@@ -180,7 +212,7 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
 
     financials = (source_jsons.get("financials") or {}).get("data")
     if financials:
-        snapshot_id = f"{case_id}:financials:{financials['period']}"
+        snapshot_id = f"{case_id}:financials:{financials.get('period', 'unknown')}"
         run_write(
             """
             MERGE (f:FinancialsSnapshot {snapshot_id: $snapshot_id})
@@ -199,7 +231,19 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
             MATCH (c:Company {cin: $cin})
             MERGE (c)-[:REPORTED_FINANCIALS]->(f)
             """,
-            snapshot_id=snapshot_id, cin=cin, case_id=case_id, ingested_at=ingested_at, **financials,
+            snapshot_id=snapshot_id,
+            cin=cin,
+            case_id=case_id,
+            ingested_at=ingested_at,
+            period=str(financials.get("period", "") or ""),
+            is_audited=bool(financials.get("is_audited")),
+            revenue=float(financials.get("revenue") or 0),
+            ebitda=float(financials.get("ebitda") or 0),
+            net_profit=float(financials.get("net_profit") or 0),
+            total_assets=float(financials.get("total_assets") or 0),
+            total_liabilities=float(financials.get("total_liabilities") or 0),
+            net_worth=float(financials.get("net_worth") or 0),
+            debt_equity_ratio=float(financials.get("debt_equity_ratio") or 0),
         )
         summary["nodes_written"].append("FinancialsSnapshot:1")
         summary["relationships_written"].append("REPORTED_FINANCIALS:1")
@@ -208,7 +252,7 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
 
     ledger = (source_jsons.get("ledger") or {}).get("data")
     if ledger:
-        snapshot_id = f"{case_id}:ledger:{ledger['period']}"
+        snapshot_id = f"{case_id}:ledger:{ledger.get('period', 'unknown')}"
         run_write(
             """
             MERGE (l:LedgerSnapshot {snapshot_id: $snapshot_id})
@@ -225,7 +269,17 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
             MATCH (c:Company {cin: $cin})
             MERGE (c)-[:REPORTED_LEDGER]->(l)
             """,
-            snapshot_id=snapshot_id, cin=cin, case_id=case_id, ingested_at=ingested_at, **ledger,
+            snapshot_id=snapshot_id,
+            cin=cin,
+            case_id=case_id,
+            ingested_at=ingested_at,
+            period=str(ledger.get("period", "") or ""),
+            total_sales=float(ledger.get("total_sales") or 0),
+            total_purchases=float(ledger.get("total_purchases") or 0),
+            debtor_days=float(ledger.get("debtor_days") or 0),
+            creditor_days=float(ledger.get("creditor_days") or 0),
+            top_debtor_concentration_pct=float(ledger.get("top_debtor_concentration_pct") or 0),
+            overdue_receivables=float(ledger.get("overdue_receivables") or 0),
         )
         summary["nodes_written"].append("LedgerSnapshot:1")
         summary["relationships_written"].append("REPORTED_LEDGER:1")

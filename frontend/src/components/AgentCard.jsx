@@ -1,5 +1,7 @@
-function formatVal(v) {
-  if (v === null || v === undefined) return "—";
+function formatVal(v, status) {
+  if (v === null || v === undefined) {
+    return (status === "valid" || status === "valid_with_warnings") ? "n/a" : "—";
+  }
   if (typeof v === "number") {
     return Math.abs(v) >= 1000 ? v.toLocaleString("en-IN") : String(v);
   }
@@ -62,7 +64,7 @@ export default function AgentCard({ label, status, result }) {
             {pickDisplayFields(data).map((k) => (
               <div className="kv-row" key={k}>
                 <span className="kv-key">{FIELD_LABELS[k] || k}</span>
-                <span className="kv-val">{formatVal(data[k])}</span>
+                <span className="kv-val">{formatVal(data[k], status)}</span>
               </div>
             ))}
           </div>

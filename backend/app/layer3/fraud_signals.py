@@ -65,7 +65,7 @@ def detect_fraud_and_contradictions(
                 f"Cash deposits are {ratio*100:.0f}% of total credits - possible turnover inflation",
                 {"cash_deposit_ratio": ratio},
             ))
-        if banking.get("bounce_count", 0) > 5:
+        if banking.get("bounce_count") is not None and int(banking["bounce_count"]) > 5:
             signals.append(_signal(
                 "excessive_bounces", "medium",
                 f"{banking['bounce_count']} cheque/ECS bounces in the period",
@@ -91,23 +91,23 @@ def detect_fraud_and_contradictions(
         ))
 
     if bureau:
-        if bureau.get("written_off_accounts", 0) > 0:
+        if bureau.get("written_off_accounts") is not None and int(bureau["written_off_accounts"]) > 0:
             signals.append(_signal(
                 "bureau_write_off", "high",
                 f"{bureau['written_off_accounts']} written-off account(s) on bureau record",
                 {"written_off_accounts": bureau["written_off_accounts"]},
             ))
-        elif bureau.get("dpd_90_plus", 0) > 0:
+        elif bureau.get("dpd_90_plus") is not None and int(bureau["dpd_90_plus"]) > 0:
             signals.append(_signal(
                 "bureau_severe_delinquency", "medium",
                 f"{bureau['dpd_90_plus']} account(s) at 90+ days past due",
                 {"dpd_90_plus": bureau["dpd_90_plus"]},
             ))
 
-    if ledger and ledger.get("top_debtor_concentration_pct", 0) > 70:
+    if ledger and ledger.get("top_debtor_concentration_pct") is not None and float(ledger["top_debtor_concentration_pct"]) > 70:
         signals.append(_signal(
             "anchor_concentration", "medium",
-            f"Single debtor accounts for {ledger['top_debtor_concentration_pct']:.0f}% of receivables",
+            f"Single debtor accounts for {float(ledger['top_debtor_concentration_pct']):.0f}% of receivables",
             {"top_debtor_concentration_pct": ledger["top_debtor_concentration_pct"]},
         ))
 

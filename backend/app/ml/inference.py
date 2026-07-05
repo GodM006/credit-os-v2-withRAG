@@ -78,7 +78,10 @@ def run_inference(state: Dict[str, Any]) -> Dict[str, Any]:
     vec = features_as_vector(state)
     X = np.array(vec, dtype=np.float32).reshape(1, -1)
 
-    pd_val = float(pipeline.predict_proba(X)[0, 1])
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)
+        pd_val = float(pipeline.predict_proba(X)[0, 1])
     risk_score = max(1, min(83, round((1 - pd_val) * 82) + 1))
     lgd = _estimate_lgd(state.get("effective_metrics", {}), state.get("source_jsons", {}))
     expected_loss_rate = round(pd_val * lgd, 4)

@@ -9,18 +9,10 @@ async function handle(res) {
 }
 
 export const api = {
-  generateCase: (scenario) =>
-    fetch(`${API_BASE}/api/layer1/cases`, {
+  uploadCaseFiles: (formData) =>
+    fetch(`${API_BASE}/api/layer1/cases/upload`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenario }),
-    }).then(handle),
-
-  generateLinkedPair: (scenario) =>
-    fetch(`${API_BASE}/api/layer1/cases/linked-pair`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenario }),
+      body: formData,
     }).then(handle),
 
   runCase: (caseId) =>

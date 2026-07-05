@@ -30,7 +30,7 @@ def status_from_issues(issues: list[ValidationIssue]) -> str:
 
 def check_banking(d: BankingData) -> list[ValidationIssue]:
     issues = []
-    if d.statement_period_end <= d.statement_period_start:
+    if d.statement_period_end and d.statement_period_start and d.statement_period_end <= d.statement_period_start:
         issues.append(ValidationIssue(field="statement_period_end", message="End date is not after start date", severity="error"))
     if d.avg_monthly_balance < 0 or d.min_balance < 0:
         issues.append(ValidationIssue(field="min_balance", message="Negative balance reported", severity="error"))
@@ -43,13 +43,13 @@ def check_banking(d: BankingData) -> list[ValidationIssue]:
 
 def check_gst(d: GSTData) -> list[ValidationIssue]:
     issues = []
-    if d.filing_status in ("defaulter", "cancelled", "suspended"):
+    if d.filing_status and d.filing_status in ("defaulter", "cancelled", "suspended"):
         issues.append(ValidationIssue(field="filing_status", message=f"GST registration status is '{d.filing_status}'", severity="warning"))
-    if d.gstr3b_annual_turnover and d.gstr1_annual_turnover:
+    if d.gstr3b_annual_turnover is not None and d.gstr1_annual_turnover is not None:
         diff_pct = abs(d.gstr3b_annual_turnover - d.gstr1_annual_turnover) / max(d.gstr3b_annual_turnover, 1)
         if diff_pct > 0.1:
             issues.append(ValidationIssue(field="gstr3b_annual_turnover", message=f"GSTR-3B vs GSTR-1 turnover differs by {diff_pct:.0%}", severity="warning"))
-    if d.vintage_months < 12:
+    if d.vintage_months is not None and d.vintage_months < 12:
         issues.append(ValidationIssue(field="vintage_months", message="GST vintage under 12 months", severity="warning"))
     return issues
 
@@ -60,37 +60,38 @@ def check_bureau(d: BureauData) -> list[ValidationIssue]:
         issues.append(ValidationIssue(field="dpd_90_plus", message="Accounts with 90+ DPD on record", severity="warning"))
     if d.written_off_accounts > 0:
         issues.append(ValidationIssue(field="written_off_accounts", message="Written-off accounts present", severity="error"))
-    if d.bureau_score < 650:
+    if d.bureau_score is not None and d.bureau_score < 650:
         issues.append(ValidationIssue(field="bureau_score", message="Bureau score below 650", severity="warning"))
     return issues
 
 
 def check_financials(d: FinancialsData) -> list[ValidationIssue]:
     issues = []
-    if d.total_liabilities > d.total_assets:
+    if d.total_liabilities is not None and d.total_assets is not None and d.total_liabilities > d.total_assets:
         issues.append(ValidationIssue(field="total_liabilities", message="Liabilities exceed assets (negative net worth)", severity="error"))
     if not d.is_audited:
         issues.append(ValidationIssue(field="is_audited", message="Financials are not audited", severity="warning"))
-    if d.debt_equity_ratio > 3:
+    if d.debt_equity_ratio is not None and d.debt_equity_ratio > 3:
         issues.append(ValidationIssue(field="debt_equity_ratio", message="Debt/Equity ratio above 3x", severity="warning"))
     return issues
 
 
 def check_ledger(d: LedgerData) -> list[ValidationIssue]:
     issues = []
-    if d.top_debtor_concentration_pct > 70:
+    if d.top_debtor_concentration_pct is not None and d.top_debtor_concentration_pct > 70:
         issues.append(ValidationIssue(field="top_debtor_concentration_pct", message="Single debtor exceeds 70% concentration - anchor risk", severity="warning"))
-    if d.debtor_days > 120:
+    if d.debtor_days is not None and d.debtor_days > 120:
         issues.append(ValidationIssue(field="debtor_days", message="Debtor days exceed 120", severity="warning"))
     return issues
 
 
 def check_kyc(d: KYCData) -> list[ValidationIssue]:
     issues = []
-    if d.kyc_doc_status != "complete":
+    if d.kyc_doc_status and d.kyc_doc_status != "complete":
         issues.append(ValidationIssue(field="kyc_doc_status", message=f"KYC docs are '{d.kyc_doc_status}'", severity="warning"))
     if len(d.directors) == 0:
-        issues.append(ValidationIssue(field="directors", message="No directors on record", severity="error"))
+        # Proprietorships legitimately have no directors — downgrade to warning
+        issues.append(ValidationIssue(field="directors", message="No directors on record", severity="warning"))
     return issues
 
 

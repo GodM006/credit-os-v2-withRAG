@@ -11,3 +11,12 @@ scikit-learn>=1.5
 lightgbm>=4.5
 joblib>=1.4
 numpy>=1.26
+python-docx>=1.1
+reportlab>=4.2
+pypdf>=5.0.0
+openpyxl>=3.1.0
+python-multipart>=0.0.18
+# --- Hybrid RAG ---
+sentence-transformers>=3.0
+rank-bm25>=0.2.2
+chromadb>=0.5.0

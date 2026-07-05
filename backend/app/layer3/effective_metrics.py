@@ -75,8 +75,11 @@ def compute_effective_metrics(
     wc_turnover_method = round(0.20 * effective_turnover) if effective_turnover else None
     wc_operating_cycle = None
     if ledger and effective_turnover:
+        debtor_days = ledger.get("debtor_days") or 0.0
+        creditor_days = ledger.get("creditor_days") or 0.0
+        total_purchases = ledger.get("total_purchases") or 0.0
         wc_operating_cycle = round(
-            max(0.0, (ledger["debtor_days"] / 365) * effective_turnover - (ledger["creditor_days"] / 365) * ledger["total_purchases"])
+            max(0.0, (debtor_days / 365) * effective_turnover - (creditor_days / 365) * total_purchases)
         )
 
     if wc_turnover_method is not None and wc_operating_cycle is not None:

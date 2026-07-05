@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { api } from "./api";
 import PipelineRail, { AGENTS } from "./components/PipelineRail";
 import AgentCard from "./components/AgentCard";
@@ -13,20 +13,26 @@ import RiskScoreGauge from "./components/RiskScoreGauge";
 import SanctionPanel from "./components/SanctionPanel";
 import CreditMemoViewer from "./components/CreditMemoViewer";
 
-const SCENARIOS = [
-  { value: "clean", label: "Clean applicant" },
-  { value: "noisy", label: "Noisy / messy OCR" },
-  { value: "fraud_risk", label: "Fraud-risk signals" },
+// File slot definitions for the upload panel
+const FILE_SLOTS = [
+  { key: "consumer_cibil",   label: "Consumer CIBIL Report",    accept: ".pdf",        required: false, hint: "PDF" },
+  { key: "commercial_cibil", label: "Commercial CIBIL Report",  accept: ".pdf",        required: false, hint: "PDF" },
+  { key: "bank_statement_1", label: "Bank Statement 1",         accept: ".xlsx,.xls",  required: false, hint: "Excel" },
+  { key: "bank_statement_2", label: "Bank Statement 2",         accept: ".xlsx,.xls",  required: false, hint: "Excel (optional)" },
+  { key: "gst_json",         label: "GST Data",                 accept: ".json",       required: false, hint: "JSON" },
+  { key: "financials",       label: "Financials / P&L",         accept: ".pdf,.xlsx",  required: false, hint: "PDF or Excel" },
+  { key: "ledger",           label: "Sales & Purchase Ledger",  accept: ".pdf,.xlsx",  required: false, hint: "PDF or Excel" },
+  { key: "kyc",              label: "KYC / Company Docs",       accept: ".pdf",        required: false, hint: "PDF" },
 ];
 
 export default function App() {
-  const [scenario, setScenario] = useState("clean");
   const [caseData, setCaseData] = useState(null);
   const [cases, setCases] = useState([]);
-  const [generating, setGenerating] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState(null);
-  const [note, setNote] = useState(null);
+  const [uploadFiles, setUploadFiles] = useState({}); // { [slotKey]: File }
+  const [uploadDone, setUploadDone] = useState(false);
 
   const [layer2Running, setLayer2Running] = useState(false);
   const [layer2Error, setLayer2Error] = useState(null);
@@ -46,16 +52,10 @@ export default function App() {
   const [layer6Running, setLayer6Running] = useState(false);
   const [layer6Error, setLayer6Error] = useState(null);
 
-  useEffect(() => {
-    refreshCaseList();
-  }, []);
+  useEffect(() => { refreshCaseList(); }, []);
 
   async function refreshCaseList() {
-    try {
-      setCases(await api.listCases());
-    } catch {
-      // non-fatal - case selector just stays empty
-    }
+    try { setCases(await api.listCases()); } catch { /* non-fatal */ }
   }
 
   const statuses = {};
@@ -73,72 +73,65 @@ export default function App() {
   const layer5Done = caseData?.risk_score !== null && caseData?.risk_score !== undefined;
   const layer6Done = caseData?.recommended_limit !== null && caseData?.recommended_limit !== undefined;
 
-  function resetLayer2Panels() {
-    setGraphData(null);
-    setRelatedParties(null);
-    setLayer2Error(null);
-    setLayer3Error(null);
-    setLayer4Error(null);
-    setLayer5Error(null);
-    setLayer6Error(null);
+  function resetPanels() {
+    setGraphData(null); setRelatedParties(null);
+    setLayer2Error(null); setLayer3Error(null);
+    setLayer4Error(null); setLayer5Error(null); setLayer6Error(null);
   }
 
-  async function handleGenerate() {
+  function handleFileSelect(slotKey, file) {
+    setUploadFiles((prev) => ({ ...prev, [slotKey]: file }));
+  }
+
+  async function handleUpload() {
+    const hasAny = Object.values(uploadFiles).some(Boolean);
+    if (!hasAny) { setError("Please select at least one document to upload."); return; }
     setError(null);
-    setNote(null);
-    setGenerating(true);
+    setUploading(true);
     setCaseData(null);
-    resetLayer2Panels();
+    resetPanels();
     try {
-      const result = await api.generateCase(scenario);
+      const formData = new FormData();
+      for (const [key, file] of Object.entries(uploadFiles)) {
+        if (file) formData.append(key, file);
+      }
+      const result = await api.uploadCaseFiles(formData);
       setCaseData(result);
+      setUploadDone(true);
       refreshCaseList();
     } catch (e) {
       setError(e.message);
     } finally {
-      setGenerating(false);
+      setUploading(false);
     }
   }
 
-  async function handleGenerateLinkedPair() {
-    setError(null);
-    setGenerating(true);
+  function handleNewUpload() {
+    setUploadFiles({});
+    setUploadDone(false);
     setCaseData(null);
-    resetLayer2Panels();
-    try {
-      const { case_a, case_b } = await api.generateLinkedPair(scenario);
-      setCaseData(case_a);
-      setNote(
-        `Linked twin case generated: ${case_b.case_id} (${case_b.company_name}) shares a director with this one. ` +
-          `Run Layer 1 + Layer 2 on both, then check "related parties" on either to see the connection.`
-      );
-      refreshCaseList();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setGenerating(false);
-    }
+    setError(null);
+    resetPanels();
   }
 
   async function handleLoadCase(caseId) {
     if (!caseId) return;
     setError(null);
-    setNote(null);
-    resetLayer2Panels();
+    resetPanels();
     try {
       const result = await api.getCase(caseId);
       setCaseData(result);
-      if (result?.evidence_map?.graph_write) {
-        const [graph, related] = await Promise.all([
+      setUploadDone(true);
+      const cin = result?.evidence_map?.graph_write?.company_cin;
+      if (cin) {
+        const [graphResult, relatedResult] = await Promise.allSettled([
           api.getCaseGraph(caseId),
           api.getRelatedParties(caseId),
         ]);
-        setGraphData(graph);
-        setRelatedParties(related);
+        if (graphResult.status === "fulfilled") setGraphData(graphResult.value);
+        if (relatedResult.status === "fulfilled") setRelatedParties(relatedResult.value);
       }
-    } catch (e) {
-      setError(e.message);
-    }
+    } catch (e) { setError(e.message); }
   }
 
   async function handleRun() {
@@ -148,17 +141,12 @@ export default function App() {
     try {
       const result = await api.runCase(caseData.case_id);
       setCaseData(result);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setRunning(false);
-    }
+    } catch (e) { setError(e.message); } finally { setRunning(false); }
   }
 
   async function handleRunLayer2() {
     if (!caseData) return;
-    setLayer2Error(null);
-    setLayer2Running(true);
+    setLayer2Error(null); setLayer2Running(true);
     try {
       const result = await api.runLayer2(caseData.case_id);
       setCaseData(result);
@@ -168,86 +156,49 @@ export default function App() {
           api.getCaseGraph(caseData.case_id),
           api.getRelatedParties(caseData.case_id),
         ]);
-        setGraphData(graph);
-        setRelatedParties(related);
+        setGraphData(graph); setRelatedParties(related);
       }
-    } catch (e) {
-      setLayer2Error(e.message);
-    } finally {
-      setLayer2Running(false);
-    }
+    } catch (e) { setLayer2Error(e.message); } finally { setLayer2Running(false); }
   }
 
   async function handleCheckRelatedParties() {
     if (!caseData) return;
     setRelatedPartiesLoading(true);
-    try {
-      setRelatedParties(await api.getRelatedParties(caseData.case_id));
-    } catch (e) {
-      setLayer2Error(e.message);
-    } finally {
-      setRelatedPartiesLoading(false);
-    }
+    try { setRelatedParties(await api.getRelatedParties(caseData.case_id)); }
+    catch (e) { setLayer2Error(e.message); } finally { setRelatedPartiesLoading(false); }
   }
 
   async function handleRunLayer3() {
     if (!caseData) return;
-    setLayer3Error(null);
-    setLayer3Running(true);
-    try {
-      const result = await api.runLayer3(caseData.case_id);
-      setCaseData(result);
-    } catch (e) {
-      setLayer3Error(e.message);
-    } finally {
-      setLayer3Running(false);
-    }
+    setLayer3Error(null); setLayer3Running(true);
+    try { const result = await api.runLayer3(caseData.case_id); setCaseData(result); }
+    catch (e) { setLayer3Error(e.message); } finally { setLayer3Running(false); }
   }
 
   async function handleRunLayer4() {
     if (!caseData) return;
-    setLayer4Error(null);
-    setLayer4Running(true);
-    try {
-      const result = await api.runLayer4(caseData.case_id);
-      setCaseData(result);
-    } catch (e) {
-      setLayer4Error(e.message);
-    } finally {
-      setLayer4Running(false);
-    }
+    setLayer4Error(null); setLayer4Running(true);
+    try { const result = await api.runLayer4(caseData.case_id); setCaseData(result); }
+    catch (e) { setLayer4Error(e.message); } finally { setLayer4Running(false); }
   }
 
   async function handleRunLayer5() {
     if (!caseData) return;
-    setLayer5Error(null);
-    setLayer5Running(true);
-    try {
-      const result = await api.runLayer5(caseData.case_id);
-      setCaseData(result);
-    } catch (e) {
-      setLayer5Error(e.message);
-    } finally {
-      setLayer5Running(false);
-    }
+    setLayer5Error(null); setLayer5Running(true);
+    try { const result = await api.runLayer5(caseData.case_id); setCaseData(result); }
+    catch (e) { setLayer5Error(e.message); } finally { setLayer5Running(false); }
   }
 
   async function handleRunLayer6() {
     if (!caseData) return;
-    setLayer6Error(null);
-    setLayer6Running(true);
-    try {
-      const result = await api.runLayer6(caseData.case_id);
-      setCaseData(result);
-    } catch (e) {
-      setLayer6Error(e.message);
-    } finally {
-      setLayer6Running(false);
-    }
+    setLayer6Error(null); setLayer6Running(true);
+    try { const result = await api.runLayer6(caseData.case_id); setCaseData(result); }
+    catch (e) { setLayer6Error(e.message); } finally { setLayer6Running(false); }
   }
 
   return (
     <div className="app-shell">
+      {/* ── HEADER ───────────────────────────────────────── */}
       <div className="app-header">
         <div>
           <div className="app-title">
@@ -255,7 +206,9 @@ export default function App() {
             <span className="layer-tag">LAYERS 1–6</span>
           </div>
           <div className="app-subtitle">
-            {caseData ? `case ${caseData.case_id} · ${caseData.company_name}` : "no case loaded"}
+            {caseData
+              ? `case ${caseData.case_id} · ${caseData.company_name}`
+              : "upload documents to begin"}
           </div>
         </div>
         <div className="controls">
@@ -263,7 +216,7 @@ export default function App() {
             <select
               value={caseData?.case_id || ""}
               onChange={(e) => handleLoadCase(e.target.value)}
-              disabled={generating || running || layer2Running}
+              disabled={uploading || running || layer2Running}
             >
               <option value="" disabled>Load existing case…</option>
               {cases.map((c) => (
@@ -273,46 +226,74 @@ export default function App() {
               ))}
             </select>
           )}
-          <select value={scenario} onChange={(e) => setScenario(e.target.value)} disabled={generating || running}>
-            {SCENARIOS.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
-            ))}
-          </select>
-          <button onClick={handleGenerate} disabled={generating || running}>
-            {generating ? "Generating…" : "Generate case"}
-          </button>
-          <button onClick={handleGenerateLinkedPair} disabled={generating || running} title="Creates two cases sharing one director, for the related-party demo">
-            Generate linked pair
-          </button>
+          {uploadDone && (
+            <button onClick={handleNewUpload} disabled={uploading || running}>
+              ＋ New upload
+            </button>
+          )}
         </div>
       </div>
 
+      {/* ── GLOBAL ERROR ─────────────────────────────────── */}
       {error && (
         <div className="card" style={{ borderColor: "var(--accent-error)", marginBottom: 20 }}>
           <span style={{ color: "var(--accent-error)", fontFamily: "var(--font-mono)", fontSize: 12 }}>{error}</span>
         </div>
       )}
 
-      {note && (
-        <div className="card" style={{ borderColor: "var(--accent-running)", marginBottom: 20 }}>
-          <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>{note}</span>
+      {/* ── UPLOAD PANEL (shown until files are uploaded) ── */}
+      {!uploadDone && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="layer-heading" style={{ marginBottom: 16 }}>
+            <span className="layer-tag">UPLOAD</span> Loan Application Documents
+          </div>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+            gap: "14px",
+            marginBottom: "20px"
+          }}>
+            {FILE_SLOTS.map((slot) => (
+              <FileSlot
+                key={slot.key}
+                slot={slot}
+                file={uploadFiles[slot.key] || null}
+                onSelect={(file) => handleFileSelect(slot.key, file)}
+              />
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <button
+              className="primary"
+              onClick={handleUpload}
+              disabled={uploading}
+              style={{ minWidth: 160 }}
+            >
+              {uploading ? "Parsing & uploading…" : "Upload & Create Case"}
+            </button>
+            <span style={{ color: "var(--text-faint)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
+              At least one document required · CIBIL PDFs, Excel bank statements, GST JSON
+            </span>
+          </div>
         </div>
       )}
 
-      {!caseData && !error && (
+      {/* ── EMPTY STATE ──────────────────────────────────── */}
+      {!caseData && !error && uploadDone && (
         <div className="empty-state">
-          Generate a synthetic applicant to begin. Six agents will read banking, GST, bureau,
-          financials, ledger, and KYC documents and extract structured JSON in parallel.
+          Case created. Run Layer 1 to extract structured data from your uploaded documents.
         </div>
       )}
 
+      {/* ── PIPELINE ─────────────────────────────────────── */}
       {caseData && (
         <>
+          {/* LAYER 1 */}
           <div className="layer-heading-row">
             <div className="layer-heading" style={{ margin: 0 }}>
               <span className="layer-tag">LAYER 1</span> Data Acquisition Agents
             </div>
-            <button className="primary" onClick={handleRun} disabled={running || generating}>
+            <button className="primary" onClick={handleRun} disabled={running || uploading}>
               {running ? "Running agents…" : "Run Layer 1"}
             </button>
           </div>
@@ -330,17 +311,21 @@ export default function App() {
             ))}
           </div>
 
-          <CollapsibleSection title="Raw documents (synthetic input)">
+          <CollapsibleSection title="Parsed document text (uploaded input)">
             <div className="doc-grid">
               {AGENTS.map((a) => (
                 <div className="doc-box" key={a.key}>
                   <div className="doc-box-title">{a.label}</div>
-                  <pre>{caseData.raw_docs?.[a.key]}</pre>
+                  <pre>{caseData.raw_docs?.[a.key]
+                    ? caseData.raw_docs[a.key].slice(0, 2000) + (caseData.raw_docs[a.key].length > 2000 ? "\n\n… [truncated for display]" : "")
+                    : "(no document uploaded for this source)"}
+                  </pre>
                 </div>
               ))}
             </div>
           </CollapsibleSection>
 
+          {/* LAYER 2 */}
           <div className="layer-heading-row">
             <div className="layer-heading" style={{ margin: 0 }}>
               <span className="layer-tag">LAYER 2</span> Context Graph (Neo4j)
@@ -363,9 +348,7 @@ export default function App() {
 
           {layer2Error && (
             <div className="card" style={{ borderColor: "var(--accent-error)", marginBottom: 16 }}>
-              <span style={{ color: "var(--accent-error)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-                {layer2Error}
-              </span>
+              <span style={{ color: "var(--accent-error)", fontFamily: "var(--font-mono)", fontSize: 12 }}>{layer2Error}</span>
             </div>
           )}
 
@@ -397,6 +380,7 @@ export default function App() {
             </>
           )}
 
+          {/* LAYER 3 */}
           <div className="layer-heading-row">
             <div className="layer-heading" style={{ margin: 0 }}>
               <span className="layer-tag">LAYER 3</span> Triangulation Engine
@@ -419,9 +403,7 @@ export default function App() {
 
           {layer3Error && (
             <div className="card" style={{ borderColor: "var(--accent-error)", marginBottom: 16 }}>
-              <span style={{ color: "var(--accent-error)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-                {layer3Error}
-              </span>
+              <span style={{ color: "var(--accent-error)", fontFamily: "var(--font-mono)", fontSize: 12 }}>{layer3Error}</span>
             </div>
           )}
 
@@ -434,7 +416,7 @@ export default function App() {
             </>
           )}
 
-          {/* ── LAYER 4 ────────────────────────────────────────────── */}
+          {/* LAYER 4 */}
           <div className="layer-heading-row">
             <div className="layer-heading" style={{ margin: 0 }}>
               <span className="layer-tag">LAYER 4</span> Policy Engine / BRE
@@ -457,9 +439,7 @@ export default function App() {
 
           {layer4Error && (
             <div className="card" style={{ borderColor: "var(--accent-error)", marginBottom: 16 }}>
-              <span style={{ color: "var(--accent-error)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-                {layer4Error}
-              </span>
+              <span style={{ color: "var(--accent-error)", fontFamily: "var(--font-mono)", fontSize: 12 }}>{layer4Error}</span>
             </div>
           )}
 
@@ -467,7 +447,7 @@ export default function App() {
             <PolicyDecisionPanel policySummary={caseData.policy_summary} />
           )}
 
-          {/* ── LAYER 5 ────────────────────────────────────────────── */}
+          {/* LAYER 5 */}
           <div className="layer-heading-row">
             <div className="layer-heading" style={{ margin: 0 }}>
               <span className="layer-tag">LAYER 5</span> ML Risk Scoring
@@ -490,9 +470,7 @@ export default function App() {
 
           {layer5Error && (
             <div className="card" style={{ borderColor: "var(--accent-error)", marginBottom: 16 }}>
-              <span style={{ color: "var(--accent-error)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-                {layer5Error}
-              </span>
+              <span style={{ color: "var(--accent-error)", fontFamily: "var(--font-mono)", fontSize: 12 }}>{layer5Error}</span>
             </div>
           )}
 
@@ -510,7 +488,7 @@ export default function App() {
             </div>
           )}
 
-          {/* ── LAYER 6 ────────────────────────────────────────────── */}
+          {/* LAYER 6 */}
           <div className="layer-heading-row">
             <div className="layer-heading" style={{ margin: 0 }}>
               <span className="layer-tag">LAYER 6</span> Sanction / Limit + Credit Memo
@@ -533,9 +511,7 @@ export default function App() {
 
           {layer6Error && (
             <div className="card" style={{ borderColor: "var(--accent-error)", marginBottom: 16 }}>
-              <span style={{ color: "var(--accent-error)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-                {layer6Error}
-              </span>
+              <span style={{ color: "var(--accent-error)", fontFamily: "var(--font-mono)", fontSize: 12 }}>{layer6Error}</span>
             </div>
           )}
 
@@ -548,12 +524,13 @@ export default function App() {
                   policyDecision={caseData.policy_summary?.policy_decision}
                 />
                 <CollapsibleSection title="Credit Memo" defaultOpen>
-                  <CreditMemoViewer memo={caseData.credit_memo} />
+                  <CreditMemoViewer memo={caseData.credit_memo} caseId={caseData.case_id} />
                 </CollapsibleSection>
               </div>
             </>
           )}
 
+          {/* AUDIT TRAIL */}
           <CollapsibleSection title={`Audit trail (${caseData.audit_trail?.length || 0} entries)`}>
             {(caseData.audit_trail || []).map((entry, idx) => (
               <div className="audit-row" key={idx}>
@@ -574,6 +551,56 @@ export default function App() {
       )}
 
       <div className="footer-note">credit decisioning os · 6-layer agentic pipeline · AppState · LangGraph</div>
+    </div>
+  );
+}
+
+// ── File Slot Sub-component ───────────────────────────────────────────────────
+function FileSlot({ slot, file, onSelect }) {
+  const inputRef = useRef(null);
+
+  return (
+    <div
+      onClick={() => inputRef.current?.click()}
+      style={{
+        border: `1.5px dashed ${file ? "var(--accent-valid)" : "var(--border)"}`,
+        borderRadius: 8,
+        padding: "14px 16px",
+        cursor: "pointer",
+        background: file ? "rgba(79,209,197,0.05)" : "var(--panel)",
+        transition: "border-color 0.2s, background 0.2s",
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        minHeight: 72,
+        justifyContent: "center",
+      }}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept={slot.accept}
+        style={{ display: "none" }}
+        onChange={(e) => onSelect(e.target.files?.[0] || null)}
+      />
+      <div style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: 11,
+        color: "var(--text-faint)",
+        textTransform: "uppercase",
+        letterSpacing: "0.06em",
+        marginBottom: 2,
+      }}>
+        {slot.hint}
+      </div>
+      <div style={{ fontWeight: 600, fontSize: 13, color: file ? "var(--accent-valid)" : "var(--text)" }}>
+        {file ? `✓ ${file.name}` : slot.label}
+      </div>
+      {!file && (
+        <div style={{ fontSize: 11, color: "var(--text-faint)" }}>
+          Click to select file
+        </div>
+      )}
     </div>
   );
 }
