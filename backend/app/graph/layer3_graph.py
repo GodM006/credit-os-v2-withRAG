@@ -1,15 +1,21 @@
 """
-Layer 3 graph: Triangulation Engine.
+Layer 3 graph: Triangulation Engine — EWRT redesign.
 
-Two branches from START:
-  - trust_aggregation -> effective_metrics   (sequential: the second node
-    needs the first's aggregated weights, which is why this isn't fanned out
-    like Layer 1/2)
-  - fraud_detection                          (independent: only needs
-    source_jsons + Layer 2's pairwise weights + a Neo4j read)
+Node topology (unchanged):
+  START → trust_aggregation → effective_metrics → END
+  START → fraud_detection                       → END
 
-Both branches read from AppState and write back into it via the same
-reducers used in Layers 1-2, so nothing about the state shape changes.
+What changed:
+  - trust_aggregation_node now calls evidence_priors (Layer A + B) inside
+    trust_aggregation.py and stores the result so effective_metrics_node
+    and fraud_detection_node can consume it without redundant recomputation.
+  - effective_metrics_node receives evidence_priors from state and passes
+    them into compute_effective_metrics (Layer C + D).
+  - fraud_detection_node receives intra_source_flags and
+    gst_self_inconsistency_pct from state and passes them into
+    detect_fraud_and_contradictions (Layer B signal emission).
+
+All reads/writes still go through AppState reducers — no state shape changes.
 """
 from __future__ import annotations
 
@@ -30,26 +36,62 @@ def _audit_entry(agent: str, detail: dict) -> dict:
 
 def trust_aggregation_node(state: AppState) -> dict:
     pairwise = (state.get("trust_weights") or {}).get("pairwise", {})
-    result = aggregate_source_trust_weights(pairwise)
+    source_jsons = state.get("source_jsons", {})
+
+    # aggregate_source_trust_weights now calls evidence_priors internally
+    result = aggregate_source_trust_weights(pairwise, source_jsons)
+
+    ep_result = result.get("evidence_priors", {})
+
     return {
-        "trust_weights": {"aggregated": result["weights"]},
-        "audit_trail": [_audit_entry("trust_aggregator", result)],
+        "trust_weights": {
+            "aggregated": result["weights"],
+            # Stash evidence_priors so downstream nodes don't recompute
+            "evidence_priors": ep_result,
+        },
+        "audit_trail": [_audit_entry("trust_aggregator", {
+            "weights": result["weights"],
+            "excluded_sources": ep_result.get("excluded_sources", []),
+            "intra_source_flags": ep_result.get("intra_source_flags", []),
+            "notes": result.get("notes", []),
+        })],
     }
 
 
 def effective_metrics_node(state: AppState) -> dict:
     pairwise = (state.get("trust_weights") or {}).get("pairwise", {})
     aggregated = (state.get("trust_weights") or {}).get("aggregated", {})
-    result = compute_effective_metrics(state.get("source_jsons", {}), aggregated, pairwise)
+    evidence_priors = (state.get("trust_weights") or {}).get("evidence_priors")
+
+    result = compute_effective_metrics(
+        state.get("source_jsons", {}),
+        aggregated,
+        pairwise,
+        evidence_priors=evidence_priors,
+    )
+
+    # Build a compact audit entry (skip triangulation_detail bulk to keep audit lean)
+    audit_detail = {k: v for k, v in result.items() if k not in ("notes", "triangulation_detail")}
+    if "triangulation_detail" in result:
+        td = result["triangulation_detail"]
+        audit_detail["confidence_breakdown"] = td.get("confidence_breakdown")
+        audit_detail["excluded_sources"] = td.get("excluded_sources")
+        audit_detail["intra_source_flags"] = td.get("intra_source_flags")
+
     return {
         "effective_metrics": result,
-        "audit_trail": [_audit_entry("effective_metrics_calculator", {k: v for k, v in result.items() if k != "notes"})],
+        "audit_trail": [_audit_entry("effective_metrics_calculator", audit_detail)],
     }
 
 
 def fraud_detection_node(state: AppState) -> dict:
     pairwise = (state.get("trust_weights") or {}).get("pairwise", {})
     cin = (state.get("evidence_map") or {}).get("graph_write", {}).get("company_cin")
+
+    # Pull Layer B outputs computed by trust_aggregation_node
+    ep_result = (state.get("trust_weights") or {}).get("evidence_priors") or {}
+    intra_source_flags = ep_result.get("intra_source_flags", [])
+    gst_self_inconsistency_pct = ep_result.get("gst_self_inconsistency_pct")
 
     related_parties, shared_accounts = [], []
     graph_check_note = None
@@ -60,9 +102,16 @@ def fraud_detection_node(state: AppState) -> dict:
         except Exception as e:
             graph_check_note = f"Neo4j traversal failed: {e}"
     else:
-        graph_check_note = "Layer 2 hasn't been run for this case - graph-based fraud checks skipped."
+        graph_check_note = "Layer 2 hasn't been run for this case — graph-based fraud checks skipped."
 
-    result = detect_fraud_and_contradictions(state.get("source_jsons", {}), pairwise, related_parties, shared_accounts)
+    result = detect_fraud_and_contradictions(
+        state.get("source_jsons", {}),
+        pairwise,
+        related_parties,
+        shared_accounts,
+        intra_source_flags=intra_source_flags,
+        gst_self_inconsistency_pct=gst_self_inconsistency_pct,
+    )
     if graph_check_note:
         result["graph_check_note"] = graph_check_note
 
@@ -74,6 +123,7 @@ def fraud_detection_node(state: AppState) -> dict:
             "fraud_risk": result["fraud_risk"],
             "signal_count": len(result["fraud_signals"]),
             "contradiction_count": len(result["contradictions"]),
+            "intra_source_flags": intra_source_flags,
         })],
     }
 

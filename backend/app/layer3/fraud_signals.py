@@ -34,6 +34,8 @@ def detect_fraud_and_contradictions(
     pairwise: Dict[str, Any],
     related_parties: List[Dict[str, Any]],
     shared_bank_accounts: List[Dict[str, Any]],
+    intra_source_flags: Optional[List[str]] = None,
+    gst_self_inconsistency_pct: Optional[float] = None,
 ) -> Dict[str, Any]:
     contradictions: List[dict] = []
     signals: List[dict] = []
@@ -55,6 +57,20 @@ def detect_fraud_and_contradictions(
     gst = (source_jsons.get("gst") or {}).get("data")
     bureau = (source_jsons.get("bureau") or {}).get("data")
     ledger = (source_jsons.get("ledger") or {}).get("data")
+
+    # --- Layer B: intra-source self-consistency flags (from evidence_priors) ---
+    if intra_source_flags and "gst_self_inconsistent" in intra_source_flags:
+        pct_str = f" ({gst_self_inconsistency_pct*100:.1f}%)" if gst_self_inconsistency_pct is not None else ""
+        signals.append(_signal(
+            "gst_self_inconsistent", "medium",
+            f"GSTR-3B and GSTR-1 annual turnovers are internally inconsistent{pct_str} — "
+            "a known GST compliance/fraud indicator where the monthly summary does not match the sales register",
+            {
+                "gstr3b_annual_turnover": gst.get("gstr3b_annual_turnover") if gst else None,
+                "gstr1_annual_turnover": gst.get("gstr1_annual_turnover") if gst else None,
+                "divergence_pct": gst_self_inconsistency_pct,
+            },
+        ))
 
     # --- Source-level red flags ---
     if banking:
