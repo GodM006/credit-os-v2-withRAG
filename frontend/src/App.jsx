@@ -5,6 +5,7 @@ import AgentCard from "./components/AgentCard";
 import CollapsibleSection from "./components/CollapsibleSection";
 import TrustWeightsTable from "./components/TrustWeightsTable";
 import ContextGraphView from "./components/ContextGraphView";
+import GraphDataCoveragePanel from "./components/GraphDataCoveragePanel";
 import RelatedPartiesList from "./components/RelatedPartiesList";
 import EffectiveMetricsPanel from "./components/EffectiveMetricsPanel";
 import FraudSignalsPanel from "./components/FraudSignalsPanel";
@@ -366,6 +367,7 @@ export default function App() {
                     Company graph neighbourhood
                   </div>
                   <ContextGraphView data={graphData} />
+                  <GraphDataCoveragePanel graphWrite={caseData?.evidence_map?.graph_write} />
                 </div>
               </div>
 

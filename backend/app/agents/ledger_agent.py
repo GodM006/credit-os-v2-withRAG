@@ -19,8 +19,18 @@ Extract EXACTLY these fields:
 6. top_debtor_concentration_pct — % of total sales to the single largest buyer (by Invoice Value sum per buyer).
    Compute: (buyer_with_max_sales / total_sales) * 100
 7. overdue_receivables — any explicitly mentioned overdue/outstanding receivable amount; default 0 if not mentioned
+8. top_debtors — list the top 5 buyers by total Invoice Value from the sales ledger. For each entry include:
+   - name: buyer name from the Customer/Buyer column (as written in the ledger)
+   - gstin: the GSTIN of Buyer column value for that buyer, or null if not present
+   - total_invoice_value: sum of Invoice Value for all invoices to this buyer
+   - pct_of_total: (total_invoice_value / total_sales) * 100, rounded to 2 decimal places
+   - role: always "debtor"
+   Return [] if no named buyers are identifiable.
+9. top_creditors — same structure from the purchase ledger side (top 5 suppliers by total Invoice Value), role "creditor".
+   Return [] if purchase ledger is absent or no named suppliers are identifiable.
 
 CRITICAL for total_sales: Extract the reported Grand Total / Summary Total for sales. Do NOT attempt mental arithmetic addition across individual invoice rows.
+CRITICAL: Never write mathematical expressions or formulas in the JSON values. Evaluate all calculations yourself and return final numeric values only.
 
 Always respond with a JSON object only — no markdown, no explanation.
 """

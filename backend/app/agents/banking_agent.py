@@ -27,6 +27,19 @@ Extract EXACTLY these fields:
 9. bounce_count — count of transactions with keywords like "bounce", "return", "dishonour", "failed", "NACH RTN", "ECS RTN" in the Description/Transaction Note
 10. inferred_annual_turnover — annualise total_credits: multiply by (12 / number_of_months_in_statement)
 11. cash_deposit_ratio — fraction of total_credits that came through "Cash" channel (0.0 to 1.0)
+12. top_counterparties — cluster transaction narrations by apparent counterparty name. Return up to 5 entries
+    for the inflow direction and up to 5 for the outflow direction (10 total at most). For each entry include:
+    - name: counterparty name extracted from the Transaction Note / Description (best effort — use the most
+      identifiable part of the narration, e.g. "HDFC BANK" from "NEFT-HDFC BANK-123456", or a company name
+      from a UPI reference like "PAY-ACME TRADERS-upi@bank")
+    - direction: "inflow" (credit transactions) or "outflow" (debit transactions)
+    - total_amount: sum of absolute amounts for all transactions attributed to this counterparty
+    - transaction_count: number of transactions attributed to this counterparty
+    - confidence: "high" if the counterparty name appears consistently and clearly across multiple transactions;
+      "medium" if partially identifiable; "low" if inferred from abbreviated or ambiguous narration
+    Only include counterparties where a name is reasonably identifiable from the narration.
+    Return [] if narrations are too opaque or consist entirely of reference numbers with no names.
+    NOTE: Bank narrations are often terse — prefer fewer, higher-confidence entries over many low-confidence ones.
 
 IMPORTANT:
 - total_credits and total_debits must ALWAYS be positive numbers.

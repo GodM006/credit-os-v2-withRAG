@@ -36,6 +36,29 @@ class BankAccountSummary(BaseModel):
         return v
 
 
+class BankCounterparty(BaseModel):
+    """A counterparty extracted from bank statement narrations (best-effort)."""
+
+    name: str = Field(default="", description="Counterparty name as best extracted from transaction narration")
+    direction: Literal["inflow", "outflow"] = Field(default="inflow")
+    total_amount: float = Field(default=0.0, description="Sum of absolute transaction amounts for this counterparty")
+    transaction_count: int = Field(default=0)
+    confidence: Literal["high", "medium", "low"] = Field(
+        default="low",
+        description="high=name appears consistently/clearly; low=inferred from partial narration"
+    )
+
+    @field_validator("total_amount", mode="before")
+    @classmethod
+    def coerce_amount(cls, v):
+        if v is None:
+            return 0.0
+        try:
+            return abs(float(str(v).replace(",", "").replace("₹", "").strip()))
+        except (TypeError, ValueError):
+            return 0.0
+
+
 class BankingData(BaseModel):
     """Extracted from bank statements / Account Aggregator (AA) feed / Open Banking."""
 
@@ -51,6 +74,11 @@ class BankingData(BaseModel):
     inferred_annual_turnover: float = Field(default=0.0, description="Annualised turnover inferred from bank credits")
     cash_deposit_ratio: Optional[float] = Field(
         default=None, description="Cash deposits / total credits. High values are a fraud/risk signal."
+    )
+    # Named counterparties — new multi-hop graph nodes (best-effort from narration)
+    top_counterparties: List[BankCounterparty] = Field(
+        default_factory=list,
+        description="Top counterparties by amount: up to 5 inflow + 5 outflow, extracted from narrations"
     )
 
     @field_validator("statement_period_start", "statement_period_end", mode="before")

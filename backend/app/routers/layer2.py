@@ -49,7 +49,7 @@ def run_layer2(case_id: str):
 @router.get("/cases/{case_id}/graph")
 def get_case_graph(case_id: str):
     cin = _get_company_cin(case_id)
-    return queries.get_company_graph(cin)
+    return queries.get_company_graph_full(cin)
 
 
 @router.get("/cases/{case_id}/related-parties")

@@ -12,6 +12,7 @@ from app.graphdb.neo4j_client import run_write
 logger = logging.getLogger(__name__)
 
 CONSTRAINTS = [
+    # Existing node types
     "CREATE CONSTRAINT company_cin IF NOT EXISTS FOR (c:Company) REQUIRE c.cin IS UNIQUE",
     "CREATE CONSTRAINT director_din IF NOT EXISTS FOR (d:Director) REQUIRE d.din IS UNIQUE",
     "CREATE CONSTRAINT gst_entity_gstin IF NOT EXISTS FOR (g:GSTEntity) REQUIRE g.gstin IS UNIQUE",
@@ -19,6 +20,10 @@ CONSTRAINTS = [
     "CREATE CONSTRAINT bureau_profile_id IF NOT EXISTS FOR (p:BureauProfile) REQUIRE p.profile_id IS UNIQUE",
     "CREATE CONSTRAINT financials_snapshot_id IF NOT EXISTS FOR (f:FinancialsSnapshot) REQUIRE f.snapshot_id IS UNIQUE",
     "CREATE CONSTRAINT ledger_snapshot_id IF NOT EXISTS FOR (l:LedgerSnapshot) REQUIRE l.snapshot_id IS UNIQUE",
+    # New node types (Phase 1, 2, 4)
+    "CREATE CONSTRAINT counterparty_id IF NOT EXISTS FOR (cp:Counterparty) REQUIRE cp.counterparty_id IS UNIQUE",
+    "CREATE CONSTRAINT loan_facility_id IF NOT EXISTS FOR (f:LoanFacility) REQUIRE f.facility_id IS UNIQUE",
+    "CREATE CONSTRAINT personal_bureau_id IF NOT EXISTS FOR (pb:PersonalBureauProfile) REQUIRE pb.personal_bureau_id IS UNIQUE",
 ]
 
 
