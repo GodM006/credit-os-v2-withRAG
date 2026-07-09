@@ -19,6 +19,10 @@ class LoanFacility(BaseModel):
         default="",
         description="'active', 'closed', 'written_off', 'settled', 'NPA'"
     )
+    guarantor_name: str = Field(
+        default="",
+        description="Name of personal guarantor or co-borrower if listed for this account"
+    )
 
     @field_validator("sanctioned_amount", "outstanding_amount", mode="before")
     @classmethod
@@ -32,7 +36,34 @@ class LoanFacility(BaseModel):
         except (TypeError, ValueError):
             return 0.0
 
-    @field_validator("lender_name", "facility_type", "dpd_bucket", "account_status", mode="before")
+    @field_validator("lender_name", "facility_type", "dpd_bucket", "account_status", "guarantor_name", mode="before")
+
+    @classmethod
+    def coerce_str_nullish(cls, v):
+        if not v or str(v).strip().lower() in NULLISH:
+            return ""
+        return str(v).strip()
+
+
+class CreditEnquiry(BaseModel):
+    """One row from the itemized ENQUIRY section of a commercial or personal bureau report."""
+
+    lender_name: str = Field(default="")
+    enquiry_date: Optional[str] = Field(default=None, description="Date of enquiry, YYYY-MM-DD or DD-MM-YYYY format")
+    purpose: str = Field(default="", description="Purpose or loan type enquired for, e.g. 'Working Capital', 'CC', 'Personal Loan'")
+    amount: float = Field(default=0.0)
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def coerce_amount(cls, v):
+        if v is None or str(v).strip().lower() in NULLISH:
+            return 0.0
+        try:
+            return float(str(v).replace(",", "").replace("₹", "").strip())
+        except (TypeError, ValueError):
+            return 0.0
+
+    @field_validator("lender_name", "enquiry_date", "purpose", mode="before")
     @classmethod
     def coerce_str_nullish(cls, v):
         if not v or str(v).strip().lower() in NULLISH:
@@ -54,6 +85,16 @@ class PersonalBureauEntry(BaseModel):
     enquiries_last_6m: int = Field(default=0)
     written_off_accounts: int = Field(default=0)
     active_accounts: int = Field(default=0)
+    facilities: List[LoanFacility] = Field(
+        default_factory=list,
+        description="Itemized credit facilities from the ACCOUNT INFORMATION section of this personal CIR"
+    )
+    enquiries: List[CreditEnquiry] = Field(
+        default_factory=list,
+        description="Itemized credit enquiries from the ENQUIRY section of this personal CIR"
+    )
+
+
 
     @field_validator(
         "dpd_30", "dpd_60", "dpd_90_plus", "enquiries_last_6m", "written_off_accounts", "active_accounts",
@@ -136,6 +177,11 @@ class BureauData(BaseModel):
         default_factory=list,
         description="Itemized credit facilities from the CREDIT FACILITY DETAILS section"
     )
+    enquiries: List[CreditEnquiry] = Field(
+        default_factory=list,
+        description="Itemized credit enquiries from the ENQUIRY section of the commercial report"
+    )
+
     # Personal CIR entries for directors/guarantors found in the same document
     personal_entries: List[PersonalBureauEntry] = Field(
         default_factory=list,

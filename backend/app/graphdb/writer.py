@@ -246,12 +246,59 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
             "count": cp_written,
             "reason": "no identifiable counterparties in narrations" if cp_written == 0 else None,
         }
+
+        # Phase 4: BankRiskEvent nodes off BankAccount
+        risk_events = banking.get("risk_events") or []
+        re_written = 0
+        first_acc_key = f"{accounts[0]['bank_name']}:{accounts[0]['account_number_masked']}"
+        for idx, re_item in enumerate(risk_events):
+            etype = re_item.get("event_type") or "nach_ecs_bounce"
+            event_id = f"{case_id}:{first_acc_key}:event:{idx}"
+            run_write(
+                """
+                MERGE (re:BankRiskEvent {event_id: $event_id})
+                SET re.event_type = $event_type,
+                    re.event_date = $event_date,
+                    re.amount = $amount,
+                    re.narration_snippet = $narration_snippet,
+                    re.confidence = $confidence,
+                    re.case_id = $case_id,
+                    re.ingested_at = $ingested_at
+                WITH re
+                MATCH (b:BankAccount {account_key: $account_key})
+                MERGE (b)-[:HAS_RISK_EVENT]->(re)
+                """,
+                event_id=event_id,
+                event_type=etype,
+                event_date=re_item.get("event_date") or "",
+                amount=float(re_item.get("amount") or 0),
+                narration_snippet=re_item.get("narration_snippet") or "",
+                confidence=re_item.get("confidence") or "low",
+                case_id=case_id,
+                ingested_at=ingested_at,
+                account_key=first_acc_key,
+            )
+            re_written += 1
+
+        if re_written:
+            summary["nodes_written"].append(f"BankRiskEvent:{re_written}")
+            summary["relationships_written"].append(f"HAS_RISK_EVENT:{re_written}")
+        summary["data_availability"]["bank_risk_events"] = {
+            "available": re_written > 0,
+            "count": re_written,
+            "reason": "no risk events flagged in bank statement narrations" if re_written == 0 else None,
+        }
     else:
         summary["skipped"].append("banking missing/invalid")
         summary["data_availability"]["bank_counterparties"] = {
             "available": False,
             "reason": "bank statement not uploaded or failed extraction",
         }
+        summary["data_availability"]["bank_risk_events"] = {
+            "available": False,
+            "reason": "bank statement not uploaded or failed extraction",
+        }
+
 
     # ── BureauProfile + Phase 4: LoanFacility + PersonalBureauProfile ────────
     bureau = (source_jsons.get("bureau") or {}).get("data")
@@ -294,14 +341,23 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
         summary["nodes_written"].append("BureauProfile:1")
         summary["relationships_written"].append("HAS_BUREAU_PROFILE:1")
 
-        # Phase 4a: LoanFacility nodes
+        # Build director lookup for matching guarantors and personal CIR entries
+        director_lookup = {}
+        for d in directors:
+            norm = _normalize_name(d.get("name", ""))
+            if norm:
+                director_lookup[norm] = d.get("din", "")
+
+        # Phase 4a & Phase 6: LoanFacility nodes + GUARANTEED_BY edges
         facilities = bureau.get("facilities") or []
         fac_written = 0
+        guar_written = 0
         for i, fac in enumerate(facilities):
             lender = fac.get("lender_name") or ""
             if not lender.strip() and not fac.get("facility_type", "").strip():
                 continue  # skip empty rows
             facility_id = f"{case_id}:facility:{i}"
+            guarantor = fac.get("guarantor_name") or ""
             run_write(
                 """
                 MERGE (f:LoanFacility {facility_id: $facility_id})
@@ -311,6 +367,7 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
                     f.outstanding_amount = $outstanding_amount,
                     f.dpd_bucket = $dpd_bucket,
                     f.account_status = $account_status,
+                    f.guarantor_name = $guarantor_name,
                     f.case_id = $case_id,
                     f.ingested_at = $ingested_at
                 WITH f
@@ -325,24 +382,90 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
                 outstanding_amount=float(fac.get("outstanding_amount") or 0),
                 dpd_bucket=str(fac.get("dpd_bucket") or "0"),
                 account_status=fac.get("account_status") or "",
+                guarantor_name=guarantor,
                 case_id=case_id,
                 ingested_at=ingested_at,
             )
             fac_written += 1
 
+            if guarantor.strip():
+                matched_din = director_lookup.get(_normalize_name(guarantor))
+                if matched_din:
+                    run_write(
+                        """
+                        MATCH (f:LoanFacility {facility_id: $facility_id})
+                        MATCH (d:Director {din: $din})
+                        MERGE (f)-[:GUARANTEED_BY]->(d)
+                        """,
+                        facility_id=facility_id,
+                        din=matched_din,
+                    )
+                    guar_written += 1
+
         if fac_written:
             summary["nodes_written"].append(f"LoanFacility:{fac_written}")
             summary["relationships_written"].append(f"HAS_FACILITY:{fac_written}")
+        if guar_written:
+            summary["relationships_written"].append(f"GUARANTEED_BY:{guar_written}")
         summary["data_availability"]["loan_facilities"] = {
             "available": fac_written > 0,
             "count": fac_written,
+            "guaranteed_count": guar_written,
             "reason": "no itemized facility table found in bureau document" if fac_written == 0 else None,
         }
+
+
+        # Phase 2a: Commercial CreditEnquiry nodes
+        commercial_enquiries = bureau.get("enquiries") or []
+        enq_written = 0
+        for i, enq in enumerate(commercial_enquiries):
+            lender = enq.get("lender_name") or ""
+            if not lender.strip() and not enq.get("enquiry_date", "").strip():
+                continue
+            enq_id = f"{profile_id}:enquiry:{i}"
+            run_write(
+                """
+                MERGE (ce:CreditEnquiry {enquiry_id: $enquiry_id})
+                SET ce.lender_name = $lender_name,
+                    ce.enquiry_date = $enquiry_date,
+                    ce.purpose = $purpose,
+                    ce.amount = $amount,
+                    ce.is_personal = false,
+                    ce.case_id = $case_id,
+                    ce.ingested_at = $ingested_at
+                WITH ce
+                MATCH (p:BureauProfile {profile_id: $profile_id})
+                MERGE (p)-[:HAS_ENQUIRY]->(ce)
+                """,
+                enquiry_id=enq_id,
+                profile_id=profile_id,
+                lender_name=lender,
+                enquiry_date=enq.get("enquiry_date") or "",
+                purpose=enq.get("purpose") or "",
+                amount=float(enq.get("amount") or 0),
+                case_id=case_id,
+                ingested_at=ingested_at,
+            )
+            enq_written += 1
+
+        if enq_written:
+            summary["nodes_written"].append(f"CreditEnquiry(commercial):{enq_written}")
+            summary["relationships_written"].append(f"HAS_ENQUIRY(commercial):{enq_written}")
+        summary["data_availability"]["commercial_enquiries"] = {
+            "available": enq_written > 0,
+            "count": enq_written,
+            "reason": "no itemized enquiry section found in commercial bureau report" if enq_written == 0 else None,
+        }
+
 
         # Phase 4b: PersonalBureauProfile nodes — match each entry to a Director by PAN or name
         personal_entries = bureau.get("personal_entries") or []
         personal_written = 0
+        personal_fac_written = 0
+        personal_enq_written = 0
         # Build lookup: normalize director names and PANs for matching
+
+
         director_lookup = {}
         for d in directors:
             norm = _normalize_name(d.get("name", ""))
@@ -421,17 +544,113 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
             )
             personal_written += 1
 
+            # Phase 1: PersonalLoanFacility nodes under this PersonalBureauProfile
+            p_facilities = entry.get("facilities") or []
+            for k, pfac in enumerate(p_facilities):
+                plender = pfac.get("lender_name") or ""
+                if not plender.strip() and not pfac.get("facility_type", "").strip():
+                    continue
+                pfac_id = f"{pb_id}:facility:{k}"
+                pguarantor = pfac.get("guarantor_name") or ""
+                run_write(
+                    """
+                    MERGE (f:LoanFacility {facility_id: $facility_id})
+                    SET f.lender_name = $lender_name,
+                        f.facility_type = $facility_type,
+                        f.sanctioned_amount = $sanctioned_amount,
+                        f.outstanding_amount = $outstanding_amount,
+                        f.dpd_bucket = $dpd_bucket,
+                        f.account_status = $account_status,
+                        f.guarantor_name = $guarantor_name,
+                        f.is_personal = true,
+                        f.case_id = $case_id,
+                        f.ingested_at = $ingested_at
+                    WITH f
+                    MATCH (pb:PersonalBureauProfile {personal_bureau_id: $pb_id})
+                    MERGE (pb)-[:HAS_FACILITY]->(f)
+                    """,
+                    facility_id=pfac_id,
+                    pb_id=pb_id,
+                    lender_name=plender,
+                    facility_type=pfac.get("facility_type") or "",
+                    sanctioned_amount=float(pfac.get("sanctioned_amount") or 0),
+                    outstanding_amount=float(pfac.get("outstanding_amount") or 0),
+                    dpd_bucket=str(pfac.get("dpd_bucket") or "0"),
+                    account_status=pfac.get("account_status") or "",
+                    guarantor_name=pguarantor,
+                    case_id=case_id,
+                    ingested_at=ingested_at,
+                )
+                personal_fac_written += 1
+
+                if pguarantor.strip():
+                    p_matched_din = director_lookup.get(_normalize_name(pguarantor))
+                    if p_matched_din:
+                        run_write(
+                            """
+                            MATCH (f:LoanFacility {facility_id: $facility_id})
+                            MATCH (d:Director {din: $din})
+                            MERGE (f)-[:GUARANTEED_BY]->(d)
+                            """,
+                            facility_id=pfac_id,
+                            din=p_matched_din,
+                        )
+                        guar_written += 1
+
+
+            # Phase 2b: Personal CreditEnquiry nodes under this PersonalBureauProfile
+            p_enquiries = entry.get("enquiries") or []
+            for k, penq in enumerate(p_enquiries):
+                plender = penq.get("lender_name") or ""
+                if not plender.strip() and not penq.get("enquiry_date", "").strip():
+                    continue
+                penq_id = f"{pb_id}:enquiry:{k}"
+                run_write(
+                    """
+                    MERGE (ce:CreditEnquiry {enquiry_id: $enquiry_id})
+                    SET ce.lender_name = $lender_name,
+                        ce.enquiry_date = $enquiry_date,
+                        ce.purpose = $purpose,
+                        ce.amount = $amount,
+                        ce.is_personal = true,
+                        ce.case_id = $case_id,
+                        ce.ingested_at = $ingested_at
+                    WITH ce
+                    MATCH (pb:PersonalBureauProfile {personal_bureau_id: $pb_id})
+                    MERGE (pb)-[:HAS_ENQUIRY]->(ce)
+                    """,
+                    enquiry_id=penq_id,
+                    pb_id=pb_id,
+                    lender_name=plender,
+                    enquiry_date=penq.get("enquiry_date") or "",
+                    purpose=penq.get("purpose") or "",
+                    amount=float(penq.get("amount") or 0),
+                    case_id=case_id,
+                    ingested_at=ingested_at,
+                )
+                personal_enq_written += 1
+
         if personal_written:
             summary["nodes_written"].append(f"PersonalBureauProfile:{personal_written}")
             summary["relationships_written"].append(f"HAS_PERSONAL_BUREAU:{personal_written}")
+        if personal_fac_written:
+            summary["nodes_written"].append(f"LoanFacility(personal):{personal_fac_written}")
+            summary["relationships_written"].append(f"HAS_FACILITY(personal):{personal_fac_written}")
+        if personal_enq_written:
+            summary["nodes_written"].append(f"CreditEnquiry(personal):{personal_enq_written}")
+            summary["relationships_written"].append(f"HAS_ENQUIRY(personal):{personal_enq_written}")
         summary["data_availability"]["personal_bureau"] = {
             "available": personal_written > 0,
             "count": personal_written,
+            "facilities_count": personal_fac_written,
+            "enquiries_count": personal_enq_written,
             "reason": (
                 "no personal CIR found in bureau document" if not personal_entries
                 else "personal CIR present but could not be matched to any Director by name or PAN"
             ) if personal_written == 0 else None,
         }
+
+
 
     else:
         summary["skipped"].append("bureau missing/invalid")
@@ -573,5 +792,39 @@ def write_case_to_graph(case_id: str, source_jsons: Dict[str, Any]) -> Dict[str,
             "available": False,
             "reason": "ledger document not uploaded or failed extraction",
         }
+
+    # ── Phase 5: Counterparty ↔ GSTEntity entity resolution ──────────────────
+    # For every Counterparty node written for this case that carries a GSTIN,
+    # check whether that GSTIN matches an existing GSTEntity in the graph.
+    # If it does, MERGE a POSSIBLE_SAME_ENTITY_AS edge (corroboration only —
+    # the two nodes are never merged/collapsed).
+    # GSTIN equality is the only match criterion; no fuzzy name matching here.
+    cp_resolved = 0
+    try:
+        resolved_rows = run_write(
+            """
+            MATCH (cp:Counterparty {case_id: $case_id})
+            WHERE cp.gstin IS NOT NULL AND cp.gstin <> ''
+            WITH cp
+            MATCH (g:GSTEntity {gstin: cp.gstin})
+            MERGE (cp)-[m:POSSIBLE_SAME_ENTITY_AS]->(g)
+            ON CREATE SET m.matched_at = $matched_at
+            RETURN count(m) AS resolved
+            """,
+            case_id=case_id,
+            matched_at=ingested_at,
+        )
+        if resolved_rows:
+            cp_resolved = resolved_rows[0].get("resolved", 0) or 0
+    except Exception as e:
+        summary["skipped"].append(f"Counterparty→GSTEntity resolution failed: {e}")
+
+    summary["data_availability"]["counterparty_entity_resolution"] = {
+        "available": cp_resolved > 0,
+        "count": int(cp_resolved),
+        "reason": "no counterparties with GSTIN matched an existing GSTEntity" if cp_resolved == 0 else None,
+    }
+    if cp_resolved:
+        summary["relationships_written"].append(f"POSSIBLE_SAME_ENTITY_AS:{cp_resolved}")
 
     return summary

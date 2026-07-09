@@ -59,6 +59,49 @@ class BankCounterparty(BaseModel):
             return 0.0
 
 
+class BankRiskEvent(BaseModel):
+    """An itemized risk event flagged from bank statement transactions."""
+
+    event_type: Literal["nach_ecs_bounce", "emi_like_debit", "gst_penalty_or_demand_debit", "large_cash_withdrawal"] = Field(
+        default="nach_ecs_bounce"
+    )
+    event_date: Optional[str] = Field(default=None, description="Date of transaction, YYYY-MM-DD or DD-MM-YYYY")
+    amount: float = Field(default=0.0)
+    narration_snippet: str = Field(default="", description="Relevant snippet from transaction narration")
+    confidence: Literal["high", "medium", "low"] = Field(default="low")
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def coerce_amount(cls, v):
+        if v is None:
+            return 0.0
+        try:
+            return abs(float(str(v).replace(",", "").replace("₹", "").strip()))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @field_validator("event_date", "narration_snippet", mode="before")
+    @classmethod
+    def coerce_str_nullish(cls, v):
+        if not v or str(v).strip().lower() in NULLISH:
+            return ""
+        return str(v).strip()
+
+    @field_validator("event_type", mode="before")
+    @classmethod
+    def coerce_event_type(cls, v):
+        allowed = {"nach_ecs_bounce", "emi_like_debit", "gst_penalty_or_demand_debit", "large_cash_withdrawal"}
+        s = str(v).strip().lower() if v else "nach_ecs_bounce"
+        return s if s in allowed else "nach_ecs_bounce"
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def coerce_confidence(cls, v):
+        allowed = {"high", "medium", "low"}
+        s = str(v).strip().lower() if v else "low"
+        return s if s in allowed else "low"
+
+
 class BankingData(BaseModel):
     """Extracted from bank statements / Account Aggregator (AA) feed / Open Banking."""
 
@@ -80,6 +123,11 @@ class BankingData(BaseModel):
         default_factory=list,
         description="Top counterparties by amount: up to 5 inflow + 5 outflow, extracted from narrations"
     )
+    risk_events: List[BankRiskEvent] = Field(
+        default_factory=list,
+        description="Itemized risk transactions flagged from narrations (e.g. NACH bounce, EMI debit, GST penalty, cash withdrawal)"
+    )
+
 
     @field_validator("statement_period_start", "statement_period_end", mode="before")
     @classmethod

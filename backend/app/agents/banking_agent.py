@@ -37,9 +37,18 @@ Extract EXACTLY these fields:
     - transaction_count: number of transactions attributed to this counterparty
     - confidence: "high" if the counterparty name appears consistently and clearly across multiple transactions;
       "medium" if partially identifiable; "low" if inferred from abbreviated or ambiguous narration
-    Only include counterparties where a name is reasonably identifiable from the narration.
     Return [] if narrations are too opaque or consist entirely of reference numbers with no names.
     NOTE: Bank narrations are often terse — prefer fewer, higher-confidence entries over many low-confidence ones.
+13. risk_events — scan transaction narrations for specific underwriting risk signals. Return up to 20 highest-amount
+    itemized transactions matching any of these event_type categories:
+    - "nach_ecs_bounce": failed/bounced NACH, ECS, cheque return, or outward bounce charges
+    - "emi_like_debit": fixed monthly recurring debits to banks/NBFCs resembling undisclosed loan EMIs
+    - "gst_penalty_or_demand_debit": payments to GST department flagged as penalties, demands, or late fees
+    - "large_cash_withdrawal": unusually large cash/ATM/bearer withdrawals
+    For each event include: event_type, event_date, amount, narration_snippet, and confidence ("high"/"medium"/"low").
+    Default confidence to "low" unless the narration explicitly and unmistakably indicates the risk type.
+    Return [] if no such risk events are found.
+
 
 IMPORTANT:
 - total_credits and total_debits must ALWAYS be positive numbers.

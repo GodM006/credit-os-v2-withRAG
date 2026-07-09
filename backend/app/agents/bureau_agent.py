@@ -34,6 +34,7 @@ ITEMIZED FACILITY TABLE (field 11 — from the commercial report):
     - outstanding_amount: the current outstanding/balance amount
     - dpd_bucket: DPD category ("0", "30", "60", "90+", "NPA")
     - account_status: "active", "closed", "written_off", "settled", or "NPA"
+    - guarantor_name: name of personal guarantor or co-borrower if mentioned for this facility, else ""
     Return [] if no itemized facility table is present. Do NOT reconstruct from summary figures.
 
 PERSONAL CIR ENTRIES (field 12 — separate entry per director/guarantor CIR found):
@@ -50,7 +51,24 @@ PERSONAL CIR ENTRIES (field 12 — separate entry per director/guarantor CIR fou
     - enquiries_last_6m: hard enquiries in the last 6 months from the personal CIR
     - written_off_accounts: written-off/settled accounts from the personal CIR
     - active_accounts: open/active accounts from the personal CIR
+    - facilities: itemized list of credit facilities from the ACCOUNT INFORMATION section of this personal CIR,
+      using the exact same fields as commercial facilities (lender_name, facility_type, sanctioned_amount,
+      outstanding_amount, dpd_bucket, account_status, guarantor_name). Return [] if no itemized facility rows are present.
+
+    - enquiries: itemized list of credit enquiries from the ENQUIRY section of this personal CIR (lender_name,
+      enquiry_date, purpose, amount). Return [] if no enquiry rows are present.
     Return [] if no personal CIR is present in the document.
+
+ITEMIZED ENQUIRY TABLE (field 13 — from the commercial report):
+13. enquiries — from the ENQUIRY section of the COMMERCIAL report, extract itemized enquiry rows.
+    For each row include:
+    - lender_name: name of inquiring institution
+    - enquiry_date: date of enquiry (e.g. "2025-11-15")
+    - purpose: loan type or purpose mentioned
+    - amount: amount enquired for (if mentioned, else 0.0)
+    Return [] if no enquiry section is present.
+
+
 
 IMPORTANT:
 - Do NOT mix commercial and personal report numbers — keep them separate.

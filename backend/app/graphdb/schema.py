@@ -24,7 +24,11 @@ CONSTRAINTS = [
     "CREATE CONSTRAINT counterparty_id IF NOT EXISTS FOR (cp:Counterparty) REQUIRE cp.counterparty_id IS UNIQUE",
     "CREATE CONSTRAINT loan_facility_id IF NOT EXISTS FOR (f:LoanFacility) REQUIRE f.facility_id IS UNIQUE",
     "CREATE CONSTRAINT personal_bureau_id IF NOT EXISTS FOR (pb:PersonalBureauProfile) REQUIRE pb.personal_bureau_id IS UNIQUE",
+    "CREATE CONSTRAINT credit_enquiry_id IF NOT EXISTS FOR (ce:CreditEnquiry) REQUIRE ce.enquiry_id IS UNIQUE",
+    "CREATE CONSTRAINT bank_risk_event_id IF NOT EXISTS FOR (re:BankRiskEvent) REQUIRE re.event_id IS UNIQUE",
 ]
+
+
 
 
 def ensure_constraints() -> None:

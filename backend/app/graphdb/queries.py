@@ -219,7 +219,126 @@ def get_related_companies(cin: str) -> Dict[str, List]:
     return {"nodes": nodes, "edges": edges}
 
 
+def get_personal_loan_facilities(cin: str) -> Dict[str, List]:
+    """LoanFacility nodes hung off PersonalBureauProfile (personal CIR loans)."""
+    rows = run_read(
+        """
+        MATCH (c:Company {cin: $cin})-[:HAS_DIRECTOR]->(d:Director)
+              -[:HAS_PERSONAL_BUREAU]->(pb:PersonalBureauProfile)-[:HAS_FACILITY]->(f:LoanFacility)
+        RETURN pb.personal_bureau_id AS parent_id, f
+        """,
+        cin=cin,
+    )
+    nodes, edges = [], []
+    for row in rows:
+        fac = row["f"]
+        fac_id = fac.get("facility_id")
+        if not fac_id:
+            continue
+        label = fac.get("lender_name") or fac.get("facility_type") or "Personal Facility"
+        nodes.append({
+            "id": fac_id,
+            "label": label,
+            "type": "LoanFacility",
+            "hop": 2,
+            "parent_id": row["parent_id"],
+            "props": dict(fac),
+        })
+        edges.append({
+            "source": row["parent_id"],
+            "target": fac_id,
+            "type": "HAS_FACILITY",
+        })
+    return {"nodes": nodes, "edges": edges}
+
+
+def get_credit_enquiries(cin: str) -> Dict[str, List]:
+    """CreditEnquiry nodes hung off commercial BureauProfile or PersonalBureauProfile."""
+    rows = run_read(
+        """
+        MATCH (c:Company {cin: $cin})-[:HAS_BUREAU_PROFILE]->(p:BureauProfile)-[:HAS_ENQUIRY]->(ce:CreditEnquiry)
+        RETURN p.profile_id AS parent_id, ce
+        UNION
+        MATCH (c:Company {cin: $cin})-[:HAS_DIRECTOR]->(:Director)
+              -[:HAS_PERSONAL_BUREAU]->(pb:PersonalBureauProfile)-[:HAS_ENQUIRY]->(ce:CreditEnquiry)
+        RETURN pb.personal_bureau_id AS parent_id, ce
+        """,
+        cin=cin,
+    )
+    nodes, edges = [], []
+    for row in rows:
+        enq = row["ce"]
+        enq_id = enq.get("enquiry_id")
+        if not enq_id:
+            continue
+        label = f"Enq: {enq.get('lender_name') or enq.get('purpose') or 'Bureau Enquiry'}"
+        nodes.append({
+            "id": enq_id,
+            "label": label,
+            "type": "CreditEnquiry",
+            "hop": 2,
+            "parent_id": row["parent_id"],
+            "props": dict(enq),
+        })
+        edges.append({
+            "source": row["parent_id"],
+            "target": enq_id,
+            "type": "HAS_ENQUIRY",
+        })
+    return {"nodes": nodes, "edges": edges}
+
+
+def count_recent_enquiries(profile_id: str, days: int = 30) -> int:
+    """Bounded Cypher helper: count itemized enquiries on a profile within the last N days.
+
+    Used by Layer 3 / velocity checks to detect sudden bursts of credit applications.
+    """
+    rows = run_read(
+        """
+        MATCH ({profile_id: $profile_id})-[:HAS_ENQUIRY]->(ce:CreditEnquiry)
+        WHERE ce.enquiry_date IS NOT NULL AND ce.enquiry_date <> ''
+          AND date(ce.enquiry_date) >= date() - duration({days: $days})
+        RETURN count(ce) AS recent_count
+        """,
+        profile_id=profile_id,
+        days=days,
+    )
+    return int(rows[0]["recent_count"]) if rows else 0
+
+
 # ── Full multi-hop graph assembly ─────────────────────────────────────────────
+
+def get_bank_risk_events(cin: str) -> Dict[str, List]:
+    """BankRiskEvent nodes hung off BankAccount (itemized transaction risk flags)."""
+    rows = run_read(
+        """
+        MATCH (c:Company {cin: $cin})-[:HOLDS_ACCOUNT]->(b:BankAccount)-[:HAS_RISK_EVENT]->(re:BankRiskEvent)
+        RETURN b.account_key AS parent_id, re
+        """,
+        cin=cin,
+    )
+    nodes, edges = [], []
+    for row in rows:
+        re_node = row["re"]
+        event_id = re_node.get("event_id")
+        if not event_id:
+            continue
+        label = f"Risk: {re_node.get('event_type')} (₹{re_node.get('amount', 0)})"
+        nodes.append({
+            "id": event_id,
+            "label": label,
+            "type": "BankRiskEvent",
+            "hop": 2,
+            "parent_id": row["parent_id"],
+            "props": dict(re_node),
+        })
+        edges.append({
+            "source": row["parent_id"],
+            "target": event_id,
+            "type": "HAS_RISK_EVENT",
+        })
+    return {"nodes": nodes, "edges": edges}
+
 
 def get_company_graph_full(cin: str) -> Dict[str, Any]:
     """Assembles a multi-hop graph payload for the frontend.
@@ -245,11 +364,17 @@ def get_company_graph_full(cin: str) -> Dict[str, Any]:
 
     merge_branch(get_ledger_counterparties(cin))
     merge_branch(get_bank_counterparties(cin))
+    merge_branch(get_bank_risk_events(cin))
     merge_branch(get_loan_facilities(cin))
     merge_branch(get_director_bureau_profiles(cin))
+    merge_branch(get_personal_loan_facilities(cin))
+    merge_branch(get_credit_enquiries(cin))
     merge_branch(get_related_companies(cin))
 
     return {"nodes": all_nodes, "edges": all_edges}
+
+
+
 
 
 # ── Layer-3 fraud/triangulation queries (unchanged) ───────────────────────────
@@ -296,3 +421,101 @@ def case_summary(case_id: str) -> Dict[str, Any]:
         case_id=case_id,
     )
     return rows[0] if rows else {}
+
+
+# ── Phase 3 — Multiple banking detection (query-only, no new extraction) ──────
+
+def detect_multiple_banking(cin: str) -> List[Dict[str, Any]]:
+    """Detect loan stacking: 2+ active CC/OD facilities from *distinct* lenders.
+
+    Traversal is bounded at 2 hops: Company → BureauProfile → LoanFacility.
+    Returns the list of matching facility rows if 2+ distinct lenders found,
+    empty list otherwise.  Does NOT wire into Layer 4 rules — that is a
+    business-rule decision to be confirmed separately.
+    """
+    rows = run_read(
+        """
+        MATCH (c:Company {cin: $cin})-[:HAS_BUREAU_PROFILE]->(p:BureauProfile)
+              -[:HAS_FACILITY]->(f:LoanFacility)
+        WHERE toLower(f.account_status) = 'active'
+          AND toLower(f.facility_type) IN ['cc', 'od', 'cash credit', 'overdraft',
+                                           'cash credit (cc)', 'overdraft (od)']
+          AND f.lender_name <> ''
+        RETURN f.lender_name      AS lender_name,
+               f.facility_id     AS facility_id,
+               f.facility_type   AS facility_type,
+               f.sanctioned_amount   AS sanctioned_amount,
+               f.outstanding_amount  AS outstanding_amount,
+               f.dpd_bucket      AS dpd_bucket
+        ORDER BY f.outstanding_amount DESC
+        LIMIT 20
+        """,
+        cin=cin,
+    )
+    # Only flag when 2+ *distinct* lenders are present
+    distinct_lenders = {r["lender_name"] for r in rows if r.get("lender_name")}
+    if len(distinct_lenders) < 2:
+        return []
+    return [dict(r) for r in rows]
+
+
+# ── Phase 5 — Counterparty ↔ GSTEntity resolution (query side) ───────────────
+
+def find_counterparty_company_matches(cin: str) -> List[Dict[str, Any]]:
+    """Return Counterparty nodes (from this company's ledger) that have been
+    resolved to an existing GSTEntity in the graph via POSSIBLE_SAME_ENTITY_AS.
+
+    This lets Layer 3 / the frontend surface: 'your top debtor is also a known
+    GST-registered entity in our system — here is what we know about them.'
+    Bounded at 3 hops: Company → LedgerSnapshot → Counterparty → GSTEntity.
+    """
+    rows = run_read(
+        """
+        MATCH (c:Company {cin: $cin})-[:REPORTED_LEDGER]->(l:LedgerSnapshot)
+              -[:HAS_COUNTERPARTY]->(cp:Counterparty)
+              -[m:POSSIBLE_SAME_ENTITY_AS]->(g:GSTEntity)
+        RETURN cp.counterparty_id   AS counterparty_id,
+               cp.name              AS counterparty_name,
+               cp.gstin             AS gstin,
+               cp.role              AS role,
+               cp.total_invoice_value AS total_invoice_value,
+               g.gstin              AS matched_gstin,
+               g.legal_name         AS matched_legal_name,
+               g.filing_status      AS matched_filing_status,
+               g.gstr3b_annual_turnover AS matched_turnover,
+               m.matched_at         AS matched_at
+        ORDER BY cp.total_invoice_value DESC
+        LIMIT 25
+        """,
+        cin=cin,
+    )
+    return [dict(r) for r in rows]
+
+
+
+
+# ── Phase 6 — Facilities Guaranteed By Director ──────────────────────────────
+
+def find_guaranteed_facilities(cin: str) -> List[Dict[str, Any]]:
+    """Return credit facilities where a company director acts as a guarantor or co-borrower."""
+    rows = run_read(
+        """
+        MATCH (c:Company {cin: $cin})-[:HAS_DIRECTOR]->(d:Director)
+              <-[:GUARANTEED_BY]-(f:LoanFacility)
+        RETURN d.name               AS director_name,
+               d.din                AS din,
+               f.lender_name        AS lender_name,
+               f.facility_type      AS facility_type,
+               f.sanctioned_amount  AS sanctioned_amount,
+               f.outstanding_amount AS outstanding_amount,
+               f.dpd_bucket         AS dpd_bucket,
+               f.account_status     AS account_status,
+               f.guarantor_name     AS guarantor_name
+        ORDER BY f.outstanding_amount DESC
+        LIMIT 25
+        """,
+        cin=cin,
+    )
+    return [dict(r) for r in rows]
+
+
