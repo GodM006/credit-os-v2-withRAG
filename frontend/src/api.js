@@ -47,4 +47,7 @@ export const api = {
 
   getRelatedParties: (caseId) =>
     fetch(`${API_BASE}/api/layer2/cases/${caseId}/related-parties`).then(handle),
+
+  resetGraph: () =>
+    fetch(`${API_BASE}/api/admin/reset-graph`, { method: "POST" }).then(handle),
 };

@@ -6,6 +6,14 @@ Nothing here should be hard-coded with secrets.
 """
 from __future__ import annotations
 
+import os
+
+# LightGBM's OpenMP runtime (libomp) deadlocks the uvicorn worker on macOS when
+# it spins up its default multi-threaded team. Pin it to a single thread before
+# any ML import loads libomp. This module is imported before app.ml, so setting
+# it here guarantees it takes effect. Respects an explicit override if present.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
