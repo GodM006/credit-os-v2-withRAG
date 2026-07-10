@@ -12,6 +12,19 @@ Agentic credit underwriting backend + console UI. 6 layers: LLM extraction (with
 - Node.js LTS
 - Free Groq API key → https://console.groq.com
 - Neo4j running locally, reachable at `http://localhost:7474`
+- **macOS only:** the LightGBM risk model (Layer 5) needs the OpenMP runtime,
+  which macOS doesn't ship. Install it and link it into the venv so LightGBM
+  can find it:
+  ```bash
+  brew install libomp
+  # after `pip install -r requirements.txt`, from the backend/ dir:
+  ln -sf "$(brew --prefix libomp)/lib/libomp.dylib" \
+    .venv/lib/python*/site-packages/lightgbm/lib/libomp.dylib
+  ```
+  Without this, Layer 5 fails to load `lib_lightgbm.dylib`. Note that the app
+  already pins `OMP_NUM_THREADS=1` and warms LightGBM before the RAG stack
+  loads (see `app/config.py` / `app/main.py`) to avoid a duplicate-OpenMP
+  segfault between LightGBM and PyTorch — don't remove that ordering.
 
 ### 1. Backend
 ```powershell
@@ -60,5 +73,8 @@ Open `http://localhost:5173`
 | Layer 1 agents all `invalid` | bad/expired Groq key or quota hit |
 | Groq `model not found` | model deprecated — check `console.groq.com/docs/models`, update `GROQ_MODEL` in `.env` |
 | Port 8000 busy | run uvicorn on `--port 8001`, update `CORS_ORIGINS` in `.env` |
+| Layer 5 → `Library not loaded: @rpath/libomp.dylib` (macOS) | `brew install libomp` + the symlink in Prereqs step 0 |
+| Backend crashes / "Failed to fetch" the first time Layer 5 runs (macOS) | duplicate-OpenMP segfault — keep `OMP_NUM_THREADS=1` and the LightGBM warmup ordering in `app/main.py` |
+| Context graph looks cluttered after several uploads | Neo4j persists every case — click **⟲ Reset graph** in the header (or `POST /api/admin/reset-graph`) to clear it |
 
 Both servers hot-reload on file changes — no restart needed while developing.
