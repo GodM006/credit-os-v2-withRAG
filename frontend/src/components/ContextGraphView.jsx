@@ -57,6 +57,41 @@ function capNeighbors(raw, k) {
   return kept;
 }
 
+// Merge counterparty nodes that differ only by transaction direction. Neo4j
+// stores each direction as its own node (…:inflow / …:outflow) with the same
+// display name and parent, which renders as duplicate labels in the graph
+// (e.g. "muham med" twice). Collapse them into one node per (parent, name) and
+// rewire the edges. Purely visual — the coverage panel keeps the true counts.
+function mergeDirectionalDuplicates(rawNodes, rawEdges) {
+  const nodes = rawNodes || [];
+  const edges = rawEdges || [];
+  const canonicalByKey = new Map(); // `${parent}::${name}` -> canonical id
+  const idRemap = new Map();        // original id -> canonical id
+  const mergedNodes = [];
+  for (const n of nodes) {
+    if (n.type === "Counterparty") {
+      const key = `${n.parent_id ?? ""}::${n.label ?? n.id}`;
+      const existing = canonicalByKey.get(key);
+      if (existing) { idRemap.set(n.id, existing); continue; }
+      canonicalByKey.set(key, n.id);
+    }
+    idRemap.set(n.id, n.id);
+    mergedNodes.push(n);
+  }
+  const resolve = (id) => idRemap.get(id) ?? id;
+  const seen = new Set();
+  const mergedEdges = [];
+  for (const e of edges) {
+    const s = resolve(e.source), t = resolve(e.target);
+    if (s === t) continue; // drop self-loops created by the merge
+    const key = s < t ? `${s}|${t}|${e.type}` : `${t}|${s}|${e.type}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    mergedEdges.push({ ...e, source: s, target: t });
+  }
+  return { nodes: mergedNodes, edges: mergedEdges };
+}
+
 export default function ContextGraphView({ data }) {
   const svgRef = useRef(null);
   const zoomRef = useRef(null);
@@ -65,8 +100,7 @@ export default function ContextGraphView({ data }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const focusRef = useRef(null);
 
-  const nodes = data?.nodes || [];
-  const edges = data?.edges || [];
+  const { nodes, edges } = mergeDirectionalDuplicates(data?.nodes, data?.edges);
   const presentTypes = [...new Set(nodes.map((n) => n.type))];
 
   const resetZoom = useCallback(() => {
