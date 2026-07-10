@@ -34,6 +34,7 @@ export default function App() {
   const [error, setError] = useState(null);
   const [uploadFiles, setUploadFiles] = useState({}); // { [slotKey]: File }
   const [uploadDone, setUploadDone] = useState(false);
+  const [resettingGraph, setResettingGraph] = useState(false);
 
   const [layer2Running, setLayer2Running] = useState(false);
   const [layer2Error, setLayer2Error] = useState(null);
@@ -57,6 +58,26 @@ export default function App() {
 
   async function refreshCaseList() {
     try { setCases(await api.listCases()); } catch { /* non-fatal */ }
+  }
+
+  async function handleResetGraph() {
+    if (!window.confirm(
+      "Clear the entire Neo4j context graph? This deletes all companies, directors, " +
+      "bank accounts and links written by every previous upload, so the next case starts " +
+      "from an empty graph. In-memory cases are not affected."
+    )) return;
+    setResettingGraph(true);
+    setError(null);
+    try {
+      const res = await api.resetGraph();
+      setGraphData(null);
+      setRelatedParties(null);
+      setError(`Graph cleared — removed ${res.deleted_nodes} nodes and ${res.deleted_relationships} relationships.`);
+    } catch (e) {
+      setError(`Failed to reset graph: ${e.message}`);
+    } finally {
+      setResettingGraph(false);
+    }
   }
 
   const statuses = {};
@@ -232,6 +253,13 @@ export default function App() {
               ＋ New upload
             </button>
           )}
+          <button
+            onClick={handleResetGraph}
+            disabled={resettingGraph || layer2Running}
+            title="Wipe the shared Neo4j context graph so the next upload starts clean"
+          >
+            {resettingGraph ? "Clearing…" : "⟲ Reset graph"}
+          </button>
         </div>
       </div>
 
